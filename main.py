@@ -1,43 +1,80 @@
-# main.py — GUI にログと状態を確実に出す強化版
-
 from __future__ import annotations
 
-import sys
-import os
+import asyncio
 import logging
 import logging.handlers
+import os
+import sys
 import threading
-import asyncio
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+
+import discord.opus
 import nacl
 import nacl.secret
 import nacl.utils
-import _cffi_backend  # PyNaCl の依存先を先に読み込む（PyInstaller 対策）
-import cffi  # PyInstaller 対策
+import _cffi_backend
+import cffi
 
-_ = nacl  # PyNaCl を先に読み込んで、音声機能の有無を早めに確定させる
-_ = nacl.secret  # secret も使うので先に読み込む
-_ = nacl.utils  # utils も使うので先に読み込む
-_ = _cffi_backend  # PyInstaller 対策
-_ = cffi  # PyInstaller 対策
+_ = nacl
+_ = nacl.secret
+_ = nacl.utils
+_ = _cffi_backend
+_ = cffi
 
-import discord.opus
+import discord
 import os
+import sys
+
+def load_opus():
+    base_dir = os.path.dirname(sys.executable)  # exe用
+    opus_path = os.path.join(base_dir, "opus.dll")
+
+    if not discord.opus.is_loaded():
+        if os.path.exists(opus_path):
+            discord.opus.load_opus(opus_path)
+            print("Opus loaded:", opus_path)
+        else:
+            print("Opus not found:", opus_path)
+
+load_opus()
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 opus_path = os.path.join(base_dir, "opus.dll")
 
+from pathlib import Path
+import sys
+
+BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+
 print("=== START ===")
+
+import os
+
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+os.environ.pop("ALL_PROXY", None)
+os.environ.pop("all_proxy", None)
+
+import discord
+import os
+
+base_dir = os.path.dirname(os.path.abspath(__file__))
+
+opus_path = os.path.join(base_dir, "opus.dll")
+
+if not discord.opus.is_loaded():
+    discord.opus.load_opus(opus_path)
+
+print("Opus loaded:", discord.opus.is_loaded())
 
 if os.path.exists(opus_path):
     discord.opus.load_opus(opus_path)
 
-# -------------------------
-# 実行元 / AppData
-# -------------------------
 if getattr(sys, "frozen", False):
     SCRIPT_DIR = Path(sys.executable).resolve().parent
     MEIPASS_DIR = getattr(sys, "_MEIPASS", None)
@@ -45,13 +82,12 @@ else:
     SCRIPT_DIR = Path(__file__).resolve().parent
     MEIPASS_DIR = None
 
-APPDATA_ROOT = Path(os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "VoxCord"
+APPDATA_ROOT = Path(
+    os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+) / "VoxCord"
 APPDATA_ROOT.mkdir(parents=True, exist_ok=True)
-
-# 相対パスで書くログや一時ファイルを AppData に寄せる
 os.chdir(APPDATA_ROOT)
 
-# PyInstaller / DLL 対策
 try:
     if MEIPASS_DIR and os.path.exists(MEIPASS_DIR):
         os.add_dll_directory(MEIPASS_DIR)
@@ -69,42 +105,35 @@ for _p in (
         except Exception:
             pass
 
-# PyNaCl を先に読み込んで、音声機能の有無を早めに確定させる
 try:
     import nacl  # noqa: F401
     import nacl.bindings  # noqa: F401
 except Exception:
     pass
 
-# PySide6
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QIcon
 
-# local modules
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config_manager import ConfigManager
 import discord_service as ds_mod
 from discord_service import DiscordService
 from gui import VoxCordGUI
+from load import LoadingWindow
 
-# tts_engine (optional)
 try:
     import tts_engine as raw_tts_module
 except Exception:
     raw_tts_module = None
 
 
-# -------------------------
-# Logging 設定（ファイル+コンソール）
-# -------------------------
 LOG_DIR = APPDATA_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def setup_logging(level: int = logging.INFO):
-    """RotatingFile + Console を設定"""
     log_file = LOG_DIR / "latest.log"
     root = logging.getLogger()
     root.setLevel(level)
@@ -118,7 +147,10 @@ def setup_logging(level: int = logging.INFO):
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
     fh = logging.handlers.RotatingFileHandler(
-        filename=str(log_file), maxBytes=1_000_000, backupCount=5, encoding="utf-8"
+        filename=str(log_file),
+        maxBytes=1_000_000,
+        backupCount=5,
+        encoding="utf-8",
     )
     fh.setFormatter(formatter)
     fh.setLevel(level)
@@ -135,69 +167,54 @@ def setup_logging(level: int = logging.INFO):
     logging.info("Logging initialized. file=%s", log_file)
 
 
-# 先にログを有効化
 setup_logging(logging.INFO)
 
 
-# -------------------------
-# Qt に安全にログを流す handler
-# -------------------------
-class QtLogHandler(logging.Handler):
-    """
-    ログレコードを GUI のログ表示に送るハンドラ。
-    emit はどのスレッドでも呼ばれるため、QTimer.singleShot を使い
-    Qt イベントスレッドで GUI.append_log を呼ぶ（スレッドセーフ）。
-    """
+class _LogRelay(QObject):
+    message = Signal(str)
 
-    def __init__(self, gui: VoxCordGUI):
+
+class WidgetLogHandler(logging.Handler):
+    def __init__(self, widget):
         super().__init__()
-        self.gui = gui
+        self.widget = widget
         self.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        self._relay = _LogRelay()
+        self._relay.message.connect(self._safe_append)
 
     def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
-            QTimer.singleShot(0, lambda m=msg: self._safe_append(m, record))
+            self._relay.message.emit(msg)
         except Exception:
             try:
-                print("QtLogHandler.emit error", file=sys.stderr)
+                print("WidgetLogHandler.emit error", file=sys.stderr)
                 print(traceback.format_exc(), file=sys.stderr)
             except Exception:
                 pass
 
-    def _safe_append(self, msg: str, record: logging.LogRecord):
+    @Slot(str)
+    def _safe_append(self, msg: str):
         try:
-            self.gui.append_log(msg)
-            txt = msg.lower()
-            if "ログイン成功" in msg or "discord: ログイン成功" in msg or "discord: login" in txt or "discordservice started" in txt:
-                self.gui.set_status("RUNNING")
-            elif "tts engine started" in txt or ("voicevox" in txt and "started" in txt):
-                self.gui.append_log("[INFO] TTS 起動完了")
-            elif record.levelno >= logging.ERROR:
-                self.gui.set_status("ERROR")
+            if self.widget is not None and hasattr(self.widget, "append_log"):
+                self.widget.append_log(msg)
         except Exception:
-            try:
-                print("Failed to append log to GUI:", msg)
-            except Exception:
-                pass
+            pass
 
 
-# -------------------------
-# AppController（バックグラウンドループ + start/stop）
-# -------------------------
 class AppController:
-    def __init__(self, config_path: str = "config.json", base_dir: str = "."):
+    def __init__(self, base_dir: str = "."):
         self.base_dir = Path(base_dir).resolve()
-        logging.info("AppController init: base_dir=%s config=%s", self.base_dir, config_path)
-        try:
-            self.config = ConfigManager(config_path)
-            logging.info("Loaded config: %s", str(self.config_path_summary()))
-        except Exception:
-            logging.exception("Config load failed, creating new config")
-            self.config = ConfigManager(config_path)
+        logging.info("AppController init: base_dir=%s", self.base_dir)
+
+        self.config: Optional[ConfigManager] = None
 
         self.loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._run_loop, name="AsyncLoopThread", daemon=True)
+        self._loop_thread = threading.Thread(
+            target=self._run_loop,
+            name="AsyncLoopThread",
+            daemon=True,
+        )
         self._loop_thread.start()
 
         self._discord_service: Optional[DiscordService] = None
@@ -206,14 +223,6 @@ class AppController:
 
         self._start_future = None
         self._stop_future = None
-
-    def config_path_summary(self):
-        try:
-            d = self.config.to_dict()
-            keys = list(d.keys())
-            return f"keys={keys}"
-        except Exception:
-            return "unavailable"
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -252,23 +261,46 @@ class AppController:
         fut.add_done_callback(_done)
         return fut
 
-    async def _start_tts_engine_coroutine(self) -> bool:
+    def load_config(self, config_path: str):
+        self.config = ConfigManager(config_path)
+        logging.info("Loaded config: %s", self.config_path_summary())
+        return self.config
+
+    def config_path_summary(self):
+        try:
+            if self.config is None:
+                return "unavailable"
+            d = self.config.to_dict()
+            keys = list(d.keys())
+            return f"keys={keys}"
+        except Exception:
+            return "unavailable"
+
+    async def _start_tts_engine_coroutine(self, timeout: float = 90.0) -> bool:
         if self._tts_started:
             logging.info("TTS already started")
             return True
+
         if raw_tts_module is None or not hasattr(raw_tts_module, "TTSEngine"):
             logging.warning("TTS engine unavailable")
             return False
+
         try:
             self._tts_instance = raw_tts_module.TTSEngine(str(self.base_dir))
             logging.info("Instantiated TTSEngine")
-            await asyncio.to_thread(self._tts_instance.start_voicevox)
+
+            await asyncio.to_thread(self._tts_instance.start_voicevox, timeout)
             self._tts_started = True
             logging.info("TTS engine started")
 
             def make_adapter(engine):
                 async def synth(text, speaker, speed=1.0):
-                    path = await asyncio.to_thread(engine.synthesize, text, int(speaker), float(speed))
+                    path = await asyncio.to_thread(
+                        engine.synthesize,
+                        text,
+                        int(speaker),
+                        float(speed),
+                    )
                     if hasattr(engine, "convert_for_discord"):
                         try:
                             converted = await asyncio.to_thread(engine.convert_for_discord, path)
@@ -277,33 +309,53 @@ class AppController:
                             logging.exception("convert_for_discord failed")
                             return path
                     return path
+
                 return synth
 
-            ds_mod.tts_engine = SimpleNamespace(synthesize_wav=make_adapter(self._tts_instance))
+            ds_mod.tts_engine = SimpleNamespace(
+                synthesize_wav=make_adapter(self._tts_instance)
+            )
             logging.info("TTS adapter installed into discord_service")
             return True
+
         except Exception:
             logging.exception("Failed to start TTS engine")
             return False
 
-    async def _stop_tts_engine_coroutine(self):
-        if not self._tts_started or not self._tts_instance:
-            logging.debug("TTS not running")
-            return
-        try:
-            await asyncio.to_thread(self._tts_instance.stop_voicevox)
-            logging.info("TTS engine stopped")
-        except Exception:
-            logging.exception("Error stopping TTS engine")
-        finally:
-            self._tts_started = False
-            self._tts_instance = None
-            ds_mod.tts_engine = None
+    def start_tts_blocking(self, timeout: float = 90.0) -> bool:
+        if self._tts_started:
+            logging.info("TTS already started")
+            return True
+
+        fut = self._run_coro_threadsafe(
+            self._start_tts_engine_coroutine(timeout=timeout),
+            desc="start_tts",
+        )
+        return fut.result(timeout=120.0)
+
+    def stop_tts_blocking(self):
+        async def _runner():
+            if not self._tts_started or not self._tts_instance:
+                return
+            try:
+                await asyncio.to_thread(self._tts_instance.stop_voicevox)
+                logging.info("TTS engine stopped")
+            except Exception:
+                logging.exception("Error stopping TTS engine")
+            finally:
+                self._tts_started = False
+                self._tts_instance = None
+                ds_mod.tts_engine = None
+
+        fut = self._run_coro_threadsafe(_runner(), desc="stop_tts")
+        fut.result(timeout=30.0)
 
     async def _start_discord_coroutine(self):
         if self._discord_service is not None:
             logging.info("DiscordService already exists")
             return
+        if self.config is None:
+            raise RuntimeError("config is not loaded")
         try:
             self._discord_service = DiscordService(self.config)
             await self._discord_service.start()
@@ -332,7 +384,7 @@ class AppController:
 
     async def start_all(self):
         logging.info("start_all: sequence begin")
-        ok = await self._start_tts_engine_coroutine()
+        ok = await self._start_tts_engine_coroutine(timeout=90.0)
         if not ok:
             logging.warning("TTS failed — abort start")
             return
@@ -342,7 +394,10 @@ class AppController:
     async def stop_all(self):
         logging.info("stop_all: sequence begin")
         await self._stop_discord_coroutine()
-        await self._stop_tts_engine_coroutine()
+        try:
+            self.stop_tts_blocking()
+        except Exception:
+            logging.exception("stop_tts failed")
         logging.info("stop_all: sequence end")
 
     def start_all_async(self):
@@ -367,13 +422,10 @@ class AppController:
         except Exception:
             logging.exception("cleanup_sync: scheduling failed")
         finally:
-            def _stop_loop():
-                try:
-                    self.loop.stop()
-                except Exception:
-                    pass
-
-            self.loop.call_soon_threadsafe(_stop_loop)
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except Exception:
+                pass
             try:
                 if self._loop_thread.is_alive():
                     self._loop_thread.join(timeout=1.0)
@@ -381,21 +433,198 @@ class AppController:
                 pass
 
 
-# -------------------------
-# 起動エントリポイント
-# -------------------------
+class StartupWorker(QObject):
+    status = Signal(str)
+    detail = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, controller: AppController, config_path: str):
+        super().__init__()
+        self.controller = controller
+        self.config_path = config_path
+
+    @Slot()
+    def run(self):
+        try:
+            self.status.emit("VOICEVOX を起動しています…")
+            self.detail.emit("既存の run.exe を終了してから起動しています")
+
+            ok = self.controller.start_tts_blocking(timeout=90.0)
+            if not ok:
+                raise RuntimeError("VOICEVOX の起動に失敗しました")
+
+            self.status.emit("設定を読み込んでいます…")
+            self.detail.emit("config.json を読み込んでいます")
+            self.controller.load_config(self.config_path)
+
+            self.status.emit("起動準備が完了しました")
+            self.detail.emit("メイン画面を開きます")
+            self.finished.emit(self.controller)
+
+        except Exception as e:
+            logging.exception("StartupWorker failed")
+            self.failed.emit(str(e))
+
+
+class StartupUiBridge(QObject):
+    def __init__(self, app: QApplication, loading: LoadingWindow, thread: QThread, state, icon, script_dir: Path):
+        super().__init__()
+        self.app = app
+        self.loading = loading
+        self.thread = thread
+        self.state = state
+        self.icon = icon
+        self.script_dir = script_dir
+
+    @Slot(str)
+    def on_status(self, text: str):
+        try:
+            self.loading.set_status(text)
+            self.loading.append_log(f"[INFO] {text}")
+        except Exception:
+            pass
+
+    @Slot(str)
+    def on_detail(self, text: str):
+        try:
+            self.loading.set_detail(text)
+            self.loading.append_log(f"  {text}")
+        except Exception:
+            pass
+
+    @Slot(str)
+    def on_failed(self, message: str):
+        try:
+            self.loading.set_status("起動に失敗しました")
+            self.loading.set_detail(message)
+            self.loading.append_log(f"[ERROR] {message}")
+            QMessageBox.critical(self.loading, "起動エラー", message)
+        finally:
+            try:
+                self.thread.quit()
+                self.thread.wait(1000)
+            except Exception:
+                pass
+            try:
+                self.app.quit()
+            except Exception:
+                pass
+
+    @Slot(object)
+    def on_finished(self, ctrl: AppController):
+        try:
+            self.loading.set_status("完了")
+            self.loading.set_detail("メイン画面を表示しています")
+            self.loading.append_log("[INFO] 起動完了")
+
+            if self.state.loading_log_handler is not None:
+                try:
+                    logging.getLogger().removeHandler(self.state.loading_log_handler)
+                except Exception:
+                    pass
+
+            gui = VoxCordGUI(ctrl.config)
+            if self.icon is not None and not self.icon.isNull():
+                gui.setWindowIcon(self.icon)
+
+            gui_log_handler = WidgetLogHandler(gui)
+            gui_log_handler.setLevel(logging.INFO)
+            logging.getLogger().addHandler(gui_log_handler)
+
+            self.state.gui = gui
+            self.state.gui_log_handler = gui_log_handler
+
+            gui.append_log("[INFO] アプリを起動しました。Start ボタンを押してください。")
+
+            def attach_future_callbacks(fut, label_on_success="RUNNING"):
+                if fut is None:
+                    return
+
+                def _cb(f):
+                    try:
+                        exc = f.exception()
+                        if exc:
+                            QMessageBox.critical(gui, "起動エラー", f"起動に失敗しました:\n{exc}")
+                            gui.append_log(f"[ERROR] 起動処理で例外: {exc}")
+                            gui.set_status("ERROR")
+                        else:
+                            gui.append_log("[INFO] 起動処理が完了しました")
+                            gui.set_status(label_on_success)
+                    except Exception:
+                        logging.exception("attach_future_callbacks failed")
+
+                try:
+                    fut.add_done_callback(lambda f: QTimer.singleShot(0, lambda: _cb(f)))
+                except Exception:
+                    logging.exception("attach_future_callbacks failed")
+
+            def on_start_clicked():
+                logging.info("[INFO] 起動要求を送信しました")
+                gui.append_log("[INFO] 接続しました。")
+                gui.set_status("CONNECTING")
+                fut = ctrl.start_all_async()
+                attach_future_callbacks(fut, label_on_success="RUNNING")
+
+            def on_stop_clicked():
+                logging.info("[INFO] 停止要求を送信しました")
+                gui.append_log("[INFO] 終了しました。")
+                gui.set_status("STOPPING")
+                fut = ctrl.stop_all_async()
+                attach_future_callbacks(fut, label_on_success="STOPPED")
+
+            gui.start_button.clicked.connect(on_start_clicked)
+            gui.stop_button.clicked.connect(on_stop_clicked)
+
+            def poll_state():
+                try:
+                    if getattr(ctrl, "_start_future", None) and not getattr(ctrl._start_future, "done", lambda: True)():
+                        gui.set_status("CONNECTING")
+                        return
+                    ds = getattr(ctrl, "_discord_service", None)
+                    if ds and getattr(ds, "client", None) and getattr(ds.client, "user", None):
+                        gui.set_status("RUNNING")
+                        return
+                    if getattr(ctrl, "_stop_future", None) and not getattr(ctrl._stop_future, "done", lambda: True)():
+                        gui.set_status("STOPPING")
+                        return
+                    gui.set_status("STOPPED")
+                except Exception:
+                    logging.exception("poll_state exception")
+
+            poll_timer = QTimer(gui)
+            poll_timer.timeout.connect(poll_state)
+            poll_timer.start(2000)
+
+            def _on_about_to_quit():
+                logging.info("Qt aboutToQuit: cleanup start")
+                gui.append_log("[INFO] アプリ終了: クリーンアップ中")
+                ctrl.cleanup_sync()
+
+            self.app.aboutToQuit.connect(_on_about_to_quit)
+
+            self.loading.close()
+            gui.show()
+            gui.raise_()
+            gui.activateWindow()
+
+        except Exception as e:
+            logging.exception("Failed to open main GUI")
+            QMessageBox.critical(self.loading, "起動エラー", str(e))
+            self.app.quit()
+        finally:
+            try:
+                self.thread.quit()
+                self.thread.wait(1000)
+            except Exception:
+                pass
+
+
 def main():
     logging.info("VoxCord main starting")
 
-    try:
-        QGuiApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QGuiApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    except Exception:
-        logging.debug("High-DPI attributes not applied")
-
     app = QApplication(sys.argv)
 
-    # アイコン
     icon = None
     for icon_path in (
         SCRIPT_DIR / "logo.ico",
@@ -410,91 +639,70 @@ def main():
     if icon is not None and not icon.isNull():
         app.setWindowIcon(icon)
 
-    config_path = str(APPDATA_ROOT / "config.json")
-    ctrl = AppController(config_path=config_path, base_dir=str(SCRIPT_DIR))
-
-    gui = VoxCordGUI(ctrl.config)
+    loading = LoadingWindow()
     if icon is not None and not icon.isNull():
-        gui.setWindowIcon(icon)
+        loading.setWindowIcon(icon)
 
-    qt_handler = QtLogHandler(gui)
-    qt_handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(qt_handler)
-    gui.append_log("[INFO] アプリを起動しました。Start ボタンを押してください。")
+    loading.show()
+    loading.raise_()
+    loading.activateWindow()
 
-    def attach_future_callbacks(fut, label_on_success="RUNNING"):
-        if fut is None:
-            return
+    controller = AppController(base_dir=str(SCRIPT_DIR))
 
-        def _cb(f):
-            try:
-                exc = f.exception()
-                if exc:
-                    QTimer.singleShot(0, lambda: (
-                        gui.append_log(f"[ERROR] 起動処理で例外: {exc}"),
-                        gui.set_status("ERROR"),
-                        QMessageBox.critical(gui, "起動エラー", f"起動に失敗しました:\n{exc}")
-                    ))
-                else:
-                    QTimer.singleShot(0, lambda: (
-                        gui.append_log("[INFO] 起動処理が完了しました"),
-                        gui.set_status(label_on_success)
-                    ))
-            except Exception:
-                QTimer.singleShot(0, lambda: gui.append_log("[ERROR] Future callback failed"))
+    state = SimpleNamespace(
+        controller=controller,
+        gui=None,
+        loading=loading,
+        loading_log_handler=None,
+        gui_log_handler=None,
+        worker=None,
+        thread=None,
+    )
 
-        try:
-            fut.add_done_callback(lambda f: _cb(f))
-        except Exception:
-            logging.exception("attach_future_callbacks failed")
+    state.loading_log_handler = WidgetLogHandler(loading)
+    state.loading_log_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(state.loading_log_handler)
 
-    def on_start_clicked():
-        logging.info("[INFO] 起動要求を送信しました")
-        gui.append_log("[INFO] 接続しました。")
-        gui.set_status("CONNECTING")
-        fut = ctrl.start_all_async()
-        attach_future_callbacks(fut, label_on_success="RUNNING")
+    config_path = str(APPDATA_ROOT / "config.json")
 
-    def on_stop_clicked():
-        logging.info("[INFO]停止要求を送信しました。")
-        gui.append_log("[INFO] 終了しました。")
-        gui.set_status("STOPPING")
-        fut = ctrl.stop_all_async()
-        attach_future_callbacks(fut, label_on_success="STOPPED")
+    worker = StartupWorker(controller=controller, config_path=config_path)
+    thread = QThread()
+    worker.moveToThread(thread)
 
-    gui.start_button.clicked.connect(on_start_clicked)
-    gui.stop_button.clicked.connect(on_stop_clicked)
+    state.worker = worker
+    state.thread = thread
 
-    def poll_state():
-        try:
-            if getattr(ctrl, "_start_future", None) and not getattr(ctrl._start_future, "done", lambda: True)():
-                gui.set_status("CONNECTING")
-                return
-            ds = getattr(ctrl, "_discord_service", None)
-            if ds and getattr(ds, "client", None) and getattr(ds.client, "user", None):
-                gui.set_status("RUNNING")
-                return
-            if getattr(ctrl, "_stop_future", None) and not getattr(ctrl._stop_future, "done", lambda: True)():
-                gui.set_status("STOPPING")
-                return
-            gui.set_status("STOPPED")
-        except Exception:
-            logging.exception("poll_state exception")
+    bridge = StartupUiBridge(
+        app=app,
+        loading=loading,
+        thread=thread,
+        state=state,
+        icon=icon,
+        script_dir=SCRIPT_DIR,
+    )
 
-    poll_timer = QTimer()
-    poll_timer.timeout.connect(poll_state)
-    poll_timer.start(2000)
+    worker.status.connect(bridge.on_status)
+    worker.detail.connect(bridge.on_detail)
+    worker.failed.connect(bridge.on_failed)
+    worker.finished.connect(bridge.on_finished)
 
-    def _on_about_to_quit():
-        logging.info("Qt aboutToQuit: cleanup start")
-        gui.append_log("[INFO] アプリ終了: クリーンアップ中")
-        ctrl.cleanup_sync()
+    thread.started.connect(worker.run)
 
-    app.aboutToQuit.connect(_on_about_to_quit)
+    def start_worker():
+        loading.set_status("起動中…")
+        loading.set_detail("VOICEVOX と設定を準備しています")
+        thread.start()
 
-    gui.show()
+    QTimer.singleShot(0, start_worker)
+
     exit_code = app.exec()
     logging.info("Qt loop exited (code=%s)", exit_code)
+
+    try:
+        if state.controller is not None:
+            state.controller.cleanup_sync()
+    except Exception:
+        pass
 
     logging.info("Exiting process")
     sys.exit(0)
