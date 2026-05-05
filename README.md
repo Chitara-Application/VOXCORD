@@ -1,4 +1,5 @@
 # VoxCord
+<img width="2344" height="1563" alt="logo" src="https://github.com/user-attachments/assets/f74c6e08-798d-488a-9a58-7040f66acf8b" />
 
 Discord のメッセージを VoiceVox で読み上げる、PySide6 製のGUI付き TTS ボット管理アプリです。
 
@@ -184,7 +185,7 @@ C:\Users\<ユーザー名>\AppData\Local\VoxCord\logs\latest.log
 ## 初回起動時の注意
 
 * `config.json` がなければ自動生成されます。
-* `VOICEVOX` と `FFmpeg` が見つからないと読み上げできません。
+* `FFmpeg`と`VoiceVox`はインストール時にダウンロード、展開されます。
 * Discord の音声機能には `PyNaCl` と `opus.dll` が必要です。
 
 ## インストーラー化
