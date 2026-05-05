@@ -35,7 +35,7 @@ Discord のメッセージを VoiceVox で読み上げる、PySide6 製のGUI付
 ## VOICEVOX使用上の注意
 
 * このアプリは著作権の関係からVOICEVOXをレポジトリに含めていません。
-* 使用時はmain.pyまたはビルドした*.exeの配下に、VOICEVOXと名前を変更し、配置してください(以下参照)
+* インストール時に自動でダウンロードされ、配置されます。
 
 ## フォルダ構成(完成系ですので自分で動かしてくださいね)
 
@@ -53,13 +53,14 @@ VoxCord/
 ├─ logo.png
 ├─ assets/
 ├─ FFmpeg/
+|　　└─ffmpeg.exeなど
 └─ VOICEVOX/
-　　└─run.exe
+　　└─run.exeなど
 ```
 
 ## 外部に置くもの
 
-アプリ本体とは別に、実行ファイルと同じ場所に以下を置きます。
+アプリ本体とは別に、実行ファイルと同じ場所に以下を置きます。(インストール時は自動で配置)
 
 * `assets/`
 * `FFmpeg/`
@@ -222,4 +223,29 @@ Discord.py、PySide6、VoiceVox、FFmpeg などの各ライセンスも確認し
 * ログも AppData 側へ保存
 * 外部フォルダは exe と同じ場所から参照
 * 音声再生では `opus.dll` が必要
+
+This software includes components from 7-Zip.
+
+7-Zip is licensed under the GNU Lesser General Public License (LGPL).
+
+Copyright (C) 1999-2024 Igor Pavlov
+
+You can obtain the source code of 7-Zip from:
+https://www.7-zip.org/
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY.
+
+This software uses libopus.
+
+Copyright (c) 2011-2024 Xiph.Org Foundation
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+- Redistributions must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.
 
