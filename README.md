@@ -224,28 +224,3 @@ Discord.py、PySide6、VoiceVox、FFmpeg などの各ライセンスも確認し
 * 外部フォルダは exe と同じ場所から参照
 * 音声再生では `opus.dll` が必要
 
-This software includes components from 7-Zip.
-
-7-Zip is licensed under the GNU Lesser General Public License (LGPL).
-
-Copyright (C) 1999-2024 Igor Pavlov
-
-You can obtain the source code of 7-Zip from:
-https://www.7-zip.org/
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY.
-
-This software uses libopus.
-
-Copyright (c) 2011-2024 Xiph.Org Foundation
-
-Redistribution and use in source and binary forms, with or without modification,
-are permitted provided that the following conditions are met:
-
-- Redistributions must retain the above copyright notice,
-  this list of conditions and the following disclaimer.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.
-
